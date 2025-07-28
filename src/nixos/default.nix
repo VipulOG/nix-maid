@@ -16,20 +16,55 @@ let
 
   utils = import (pkgs.path + /nixos/lib/utils.nix);
 
-  maidModule = types.submoduleWith {
-    class = "maid";
-    modules = lib.singleton (
-      { config, ... }:
-      {
-        imports = import ../maid/all-modules.nix;
-        config._module.args = {
-          inherit pkgs;
-          # FIXME: If we pass-through nixos' systemdUtils, we get dbus.service in config.build.units
-          # inherit (utils) systemdUtils;
-          systemdUtils = (utils { inherit config pkgs lib; }).systemdUtils;
-        };
-      }
-    );
+  mkMaidModule =
+    {
+      specialArgs ? { },
+    }:
+    types.submoduleWith {
+      class = "maid";
+      modules = lib.singleton (
+        { config, ... }:
+        {
+          imports = import ../maid/all-modules.nix;
+          config._module.args = {
+            inherit pkgs;
+            # FIXME: If we pass-through nixos' systemdUtils, we get dbus.service in config.build.units
+            # inherit (utils) systemdUtils;
+            systemdUtils = (utils { inherit config pkgs lib; }).systemdUtils;
+          }
+          // specialArgs;
+        }
+      );
+    };
+
+  maidWithSpecialArgsType = types.mkOptionType {
+    name = "maidWithSpecialArgs";
+    description = "maid configuration with optional specialArgs";
+    check = x: types.attrs.check x; # Accept any attribute set
+    merge =
+      loc: defs:
+      let
+        values = map (x: x.value) defs;
+        hasSpecialArgs = lib.any (v: v ? specialArgs) values;
+      in
+      if hasSpecialArgs then
+        let
+          defWithSpecialArgs = lib.findFirst (v: v ? specialArgs) { } values;
+
+          cleanDefs = map (
+            def:
+            def
+            // {
+              value = builtins.removeAttrs def.value [ "specialArgs" ];
+            }
+          ) defs;
+
+          specialArgs = defWithSpecialArgs.specialArgs or { };
+          maidType = mkMaidModule { inherit specialArgs; };
+        in
+        maidType.merge loc cleanDefs
+      else
+        (mkMaidModule { }).merge loc defs;
   };
 
   userSubmodule =
@@ -38,7 +73,7 @@ let
       options = {
         maid = mkOption {
           description = "Nix-maid configuration";
-          type = types.nullOr maidModule;
+          type = types.nullOr maidWithSpecialArgsType;
           default = null;
         };
       };
@@ -62,7 +97,6 @@ let
       Type = "oneshot";
     };
   };
-
   # exportedSystemdVariables = concatStringsSep "|" [
   #   "DBUS_SESSION_BUS_ADDRESS"
   #   "DISPLAY"
